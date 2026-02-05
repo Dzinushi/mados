@@ -21,6 +21,27 @@ pip install -r requirements.txt --extra-index-url https://download.pytorch.org/w
 conda install pytables==3.7.0
 ```
 
+ ### If drop error with 'libtorch_cpu.so' or 'libtorch_cuda.so' use next steps
+```bash
+execstack -c $CONDA_PREFIX/lib/python3.8/site-packages/torch/lib/libtorch_cpu.so
+```
+ ### Next check if all right. If not may be pip packages are bad interacting with conda packages. Try to use only conda-packages. At first remove pip-packages (fail to applying execstack):
+```bash
+python -m pip uninstall -y torch torchvision torchaudio
+```
+ ### Install from conda (CUDA-version if needed)
+```bash
+conda install pytorch==1.11.0 torchvision==0.12.0 torchaudio cudatoolkit=11.3 -c pytorch -y
+```
+ ### Find libtorch_cpu.so in conda-mados (path in command below for example)
+```bash
+execstack -c $CONDA_PREFIX/lib/python3.8/site-packages/torch/lib/libtorch_cpu.so
+```
+ ### Re-install the library if the related error occurs
+```bash
+pip install -U --force-reinstall charset-normalizer
+```
+
  ## Evaluate MariNeXt
 
 To evaluate MariNeXt, place the MADOS dataset under the `data` folder, download the pretrained models (5 different runs) from [here](https://drive.google.com/drive/folders/1VwkFp47TEvRVXHNbucBmmylfZwIUmCWx?usp=drive_link) and place them under the `marinext/trained_models` folder and then run the following:
