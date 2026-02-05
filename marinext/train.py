@@ -74,10 +74,11 @@ def main(options):
     
     # Construct Data loader
     dataset_train = MADOS(options['path'], splits_path, 'train')
-    dataset_val = MADOS(options['path'], splits_path, 'val')
-    
-    train_loader = DataLoader(  dataset_train, 
-                                batch_size = options['batch'], 
+    # dataset_val = MADOS(options['path'], splits_path, 'val')
+    dataset_val = MADOS(options['path'], splits_path, 'test')
+
+    train_loader = DataLoader(  dataset_train,
+                                batch_size = options['batch'],
                                 shuffle = True,
                                 num_workers = options['num_workers'],
                                 pin_memory = options['pin_memory'],
@@ -86,17 +87,17 @@ def main(options):
                                 worker_init_fn=seed_worker,
                                 generator=g,
                                 drop_last=True)
-    
-    val_loader = DataLoader(   dataset_val, 
-                                batch_size = options['batch'], 
+
+    val_loader = DataLoader(   dataset_val,
+                                batch_size = options['batch'],
                                 shuffle = False,
                                 num_workers = options['num_workers'],
                                 pin_memory = options['pin_memory'],
                                 prefetch_factor = options['prefetch_factor'],
                                 persistent_workers= options['persistent_workers'],
                                 worker_init_fn=seed_worker,
-                                generator=g)         
-    
+                                generator=g)
+
     # Use gpu or cpu
     if torch.cuda.is_available():
         device = torch.device("cuda")
@@ -140,9 +141,23 @@ def main(options):
 
     optimizer = torch.optim.Adam(model.parameters(), lr=options['lr'], weight_decay=options['decay'])
 
+    # My custom update
+    # decay, no_decay = [], []
+    # for name, p in model.named_parameters():
+    #     if 'r1' in name or 'r2' in name:
+    #         no_decay.append(p)
+    #     else:
+    #         decay.append(p)
+    # optimizer = torch.optim.SGD([
+    #     {'params': decay, 'weight_decay': 1e-4},
+    #     {'params': no_decay, 'weight_decay': 0.0, 'lr': options * 5}  # можно дать больший lr
+    # ], lr=base_lr, momentum=0.9)
+
     # Learning Rate scheduler
     if options['reduce_lr_on_plateau']==1:
-        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.1, patience=10, verbose=True)
+        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+            optimizer, mode='min', factor=options['factor'], patience=options['patience'], verbose=True
+        )
     else:
         scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer, options['lr_steps'], gamma=0.1, verbose=True)
 
@@ -376,8 +391,8 @@ if __name__ == "__main__":
     parser.add_argument('--path', help='Path of the images')
   
     parser.add_argument('--mode', default='train', help='select between train or test ')
-    parser.add_argument('--epochs', default=80, type=int, help='Number of epochs to run')
-    parser.add_argument('--batch', default=5, type=int, help='Batch size')
+    parser.add_argument('--epochs', default=120, type=int, help='Number of epochs to run')
+    parser.add_argument('--batch', default=8, type=int, help='Batch size')
     parser.add_argument('--resume_from_epoch', default=0, type=int, help='load model from previous epoch')
     
     parser.add_argument('--input_channels', default=11, type=int, help='Number of input bands')
@@ -388,10 +403,12 @@ if __name__ == "__main__":
     parser.add_argument('--vscp',  type=bool_flag, default=True)
     parser.add_argument('--label_smoothing', default=0.0, type=float, help='Label smoothing')
     parser.add_argument('--clip_grad', default=None, type=float, help='Gradient Cliping')
-    parser.add_argument('--lr', default=2e-4, type=float, help='learning rate')
-    parser.add_argument('--decay', default=0, type=float, help='learning rate decay')
+    parser.add_argument('--lr', default=1e-3, type=float, help='learning rate')
+    parser.add_argument('--decay', default=1e-4, type=float, help='learning rate decay')
     parser.add_argument('--reduce_lr_on_plateau', default=0, type=int, help='reduce learning rate when no increase (0 or 1)')
-    parser.add_argument('--lr_steps', default='[45,65]', type=str, help='Specify the steps that the lr will be reduced')
+    parser.add_argument('--factor', default=0.1, type=float, help='reduce learning rate factor for lr')
+    parser.add_argument('--patience', default=10, type=int, help='reduce learning rate patience from 1 to epoch_count')
+    parser.add_argument('--lr_steps', default='[30,50,70]', type=str, help='Specify the steps that the lr will be reduced')
 
     # Evaluation/Checkpointing
     parser.add_argument('--checkpoint_path', default=os.path.join(up(os.path.abspath(__file__)), 'trained_models'), help='folder to save checkpoints into (empty = this folder)')
@@ -403,10 +420,10 @@ if __name__ == "__main__":
     parser.add_argument('--model_ema_eval',  type=bool_flag, default=True, help='Using ema to eval during training.')
 
     # misc
-    parser.add_argument('--num_workers', default=0, type=int, help='How many cpus for loading data (0 is the main process)')
-    parser.add_argument('--pin_memory', default=False, type=bool_flag, help='Use pinned memory or not')
+    parser.add_argument('--num_workers', default=6, type=int, help='How many cpus for loading data (0 is the main process)')
+    parser.add_argument('--pin_memory', default=True, type=bool_flag, help='Use pinned memory or not')
     parser.add_argument('--prefetch_factor', default=2, type=int, help='Number of sample loaded in advance by each worker')
-    parser.add_argument('--persistent_workers', default=False, type=bool_flag, help='This allows to maintain the workers Dataset instances alive.')
+    parser.add_argument('--persistent_workers', default=True, type=bool_flag, help='This allows to maintain the workers Dataset instances alive.')
     parser.add_argument('--tensorboard', default='tsboard_segm', type=str, help='Name for tensorboard run')
 
     args = parser.parse_args()
@@ -419,7 +436,7 @@ if __name__ == "__main__":
     elif type(lr_steps) is int:
         lr_steps = [lr_steps]
     else:
-        raise
+        raise ValueError("lr_steps must be list or number")
         
     options['lr_steps'] = lr_steps
     
