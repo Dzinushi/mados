@@ -12,14 +12,35 @@ from mmcv.cnn.utils.weight_init import (constant_init, normal_init,
                                         trunc_normal_init)
 
 
+class TReLU(nn.Module):
+    def __init__(self, r1: float = None, r2: float = None):
+        super(TReLU, self).__init__()
+        self.r1 = nn.Parameter(torch.tensor(r1))
+        self.r2 = nn.Parameter(torch.tensor(r2))
+
+    def forward(self, input: torch.Tensor) -> torch.Tensor:
+        r1_mask = (input >= 0).type_as(input)
+        r2_mask = 1 - r1_mask
+        return input * (self.r1 * r1_mask + self.r2 * r2_mask)
+
+
+def build_act_layer(act_layer) -> nn.Module:
+    if act_layer["type"] == "GELU":
+        return nn.GELU()
+    elif act_layer["type"] == "TReLU":
+        return TReLU(r1=act_layer.get("r1"), r2=act_layer.get("r2"))
+    else:
+        raise NotImplementedError("Module '{}' is not found".format(act_layer["type"]))
+
+
 class Mlp(BaseModule):
-    def __init__(self, in_features, hidden_features=None, out_features=None, act_layer=nn.GELU, drop=0.):
+    def __init__(self, in_features, hidden_features=None, out_features=None, act_layer=nn.GELU(), drop=0.):
         super().__init__()
         out_features = out_features or in_features
         hidden_features = hidden_features or in_features
         self.fc1 = nn.Conv2d(in_features, hidden_features, 1)
         self.dwconv = DWConv(hidden_features)
-        self.act = act_layer()
+        self.act = act_layer
         self.fc2 = nn.Conv2d(hidden_features, out_features, 1)
         self.drop = nn.Dropout(drop)
 
@@ -36,14 +57,13 @@ class Mlp(BaseModule):
 
 
 class StemConv(BaseModule):
-    def __init__(self, in_channels, out_channels, norm_cfg=dict(type='SyncBN', requires_grad=True)):
+    def __init__(self, in_channels, out_channels, norm_cfg=dict(type='SyncBN', requires_grad=True), act_layer=dict(type="GELU")):
         super(StemConv, self).__init__()
-
         self.proj = nn.Sequential(
             nn.Conv2d(in_channels, out_channels // 2,
                       kernel_size=(3, 3), stride=(2, 2), padding=(1, 1)),
             build_norm_layer(norm_cfg, out_channels // 2)[1],
-            nn.GELU(),
+            build_act_layer(act_layer),
             nn.Conv2d(out_channels // 2, out_channels,
                       kernel_size=(3, 3), stride=(2, 2), padding=(1, 1)),
             build_norm_layer(norm_cfg, out_channels)[1],
@@ -92,11 +112,11 @@ class AttentionModule(BaseModule):
 
 
 class SpatialAttention(BaseModule):
-    def __init__(self, d_model):
+    def __init__(self, d_model, act_layer=dict(type="GELU")):
         super().__init__()
         self.d_model = d_model
         self.proj_1 = nn.Conv2d(d_model, d_model, 1)
-        self.activation = nn.GELU()
+        self.activation = build_act_layer(act_layer=act_layer)
         self.spatial_gating_unit = AttentionModule(d_model)
         self.proj_2 = nn.Conv2d(d_model, d_model, 1)
 
@@ -117,17 +137,17 @@ class Block(BaseModule):
                  mlp_ratio=4.,
                  drop=0.,
                  drop_path=0.,
-                 act_layer=nn.GELU,
+                 act_layer=dict(type="GELU"),
                  norm_cfg=dict(type='SyncBN', requires_grad=True)):
         super().__init__()
         self.norm1 = build_norm_layer(norm_cfg, dim)[1]
-        self.attn = SpatialAttention(dim)
+        self.attn = SpatialAttention(dim, act_layer=act_layer)
         self.drop_path = DropPath(
             drop_path) if drop_path > 0. else nn.Identity()
         self.norm2 = build_norm_layer(norm_cfg, dim)[1]
         mlp_hidden_dim = int(dim * mlp_ratio)
         self.mlp = Mlp(in_features=dim, hidden_features=mlp_hidden_dim,
-                       act_layer=act_layer, drop=drop)
+                       act_layer=build_act_layer(act_layer=act_layer), drop=drop)
         layer_scale_init_value = 1e-2
         self.layer_scale_1 = nn.Parameter(
             layer_scale_init_value * torch.ones((dim)), requires_grad=True)
@@ -178,6 +198,7 @@ class MSCAN(BaseModule):
                  depths=[3, 4, 6, 3],
                  num_stages=4,
                  norm_cfg=dict(type='SyncBN', requires_grad=True),
+                 act_layer=dict(type="GELU"),
                  pretrained=None,
                  init_cfg=None):
         super(MSCAN, self).__init__(init_cfg=init_cfg)
@@ -200,7 +221,7 @@ class MSCAN(BaseModule):
 
         for i in range(num_stages):
             if i == 0:
-                patch_embed = StemConv(in_chans, embed_dims[0], norm_cfg=norm_cfg)
+                patch_embed = StemConv(in_chans, embed_dims[0], norm_cfg=norm_cfg, act_layer=act_layer)
             else:
                 patch_embed = OverlapPatchEmbed(patch_size=7 if i == 0 else 3,
                                                 stride=4 if i == 0 else 2,
@@ -210,7 +231,7 @@ class MSCAN(BaseModule):
 
             block = nn.ModuleList([Block(dim=embed_dims[i], mlp_ratio=mlp_ratios[i],
                                          drop=drop_rate, drop_path=dpr[cur + j],
-                                         norm_cfg=norm_cfg)
+                                         norm_cfg=norm_cfg, act_layer=act_layer)
                                    for j in range(depths[i])])
             norm = nn.LayerNorm(embed_dims[i])
             cur += depths[i]

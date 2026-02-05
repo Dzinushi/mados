@@ -66,8 +66,12 @@ def main(options):
 
     dataset_test = MADOS(options['path'], splits_path, options['split'])
 
-    test_loader = DataLoader(   dataset_test, 
-                                batch_size = options['batch'], 
+    test_loader = DataLoader(   dataset_test,
+                                batch_size = options['batch'],
+                                num_workers=options['num_workers'],
+                                pin_memory=options['pin_memory'],
+                                prefetch_factor=options['prefetch_factor'],
+                                persistent_workers=options['persistent_workers'],
                                 shuffle = False)
 
     # Use gpu or cpu
@@ -104,48 +108,48 @@ def main(options):
 
     y_true = []
     y_predicted = []
-                             
+
     with torch.no_grad():
         for (image, target) in tqdm(test_loader, desc="testing"):
 
             if options['test_time_augmentations'] and options['batch']==1: # Only with batch = 1
-                image = TTA(image)            
+                image = TTA(image)
 
             image = image.to(device)
             target = target.to(device)
-            
+
             seed_all(0)
-            
+
             all_predictions = []
             for model in models_list:
                 logits = model(image)
                 logits = F.upsample(input=logits, size=(
                     target.shape[-2], target.shape[-1]), mode='bilinear')
-                
+
                 # Accuracy metrics only on annotated pixels
                 probs = torch.nn.functional.softmax(logits, dim=1)
                 predictions = probs.argmax(1)
-                
+
                 if options['test_time_augmentations'] and options['batch']==1: # Only with batch = 1
                     predictions = TTA(predictions, reverse_aggregation = True)
-                
+
                 all_predictions.append(predictions)
             all_predictions = torch.cat(all_predictions)
             all_predictions = torch.mode(all_predictions, dim=0, keepdim=True)[0]
-                
-            
+
+
             predictions = predictions.reshape(-1)
             target = target.reshape(-1)
             mask = target != -1
-            
+
             predictions = predictions[mask].cpu().numpy()
             target = target[mask]
-            
+
             target = target.cpu().numpy()
-            
+
             y_predicted += predictions.tolist()
             y_true += target.tolist()
-        
+
         ####################################################################
         # Save Scores to the .log file                                     #
         ####################################################################
@@ -157,12 +161,12 @@ def main(options):
         conf_mat = confusion_matrix(y_true, y_predicted, labels, options['results_percentage'])
         logging.info("Confusion Matrix:  \n" + str(conf_mat.to_string()))
         print("Confusion Matrix:  \n" + str(conf_mat.to_string()))
-        
-                        
+
+
         seed_all(0)
-                
+
         if options['predict_masks']:
-            
+
             path = options['path']
             tiles = glob(os.path.join(path,'*'))
             ROIs_split = np.genfromtxt(os.path.join(splits_path, options['split']+'_X.txt'),dtype='str')
@@ -173,24 +177,24 @@ def main(options):
 
                 # Get the number of different crops for the specific tile
                 splits = [f.split('_cl_')[-1] for f in glob(os.path.join(tile, '10', '*_cl_*'))]
-                
+
                 for crop in splits:
                     crop_name = os.path.basename(tile)+'_'+crop.split('.tif')[0]
-                    
+
                     if crop_name in ROIs_split:
-        
+
                         # Load Input Images
-                        # Get the bands for the specific crop 
+                        # Get the bands for the specific crop
                         all_bands = glob(os.path.join(tile, '*', '*L2R_rhorc*_'+crop))
                         all_bands = sorted(all_bands, key=get_band)
-            
+
                         ################################
                         # Upsample the bands #
                         ################################
                         current_image = []
                         for c, band in enumerate(all_bands, 1):
                             upscale_factor = int(os.path.basename(os.path.dirname(band)))//10
-            
+
                             with rasterio.open(band, mode ='r') as src:
                                 tags = src.tags().copy()
                                 meta = src.meta
@@ -203,17 +207,17 @@ def main(options):
                                                                 resampling=Resampling.nearest
                                                               ).copy()
                                                   )
-                        
+
                         image = np.stack(current_image)
                         image = np.moveaxis(image, (0, 1, 2), (2, 0, 1))
-            
+
                         os.makedirs(options['gen_masks_path'], exist_ok=True)
-                    
+
                         output_image = os.path.join(options['gen_masks_path'], os.path.basename(crop_name).split('.tif')[0] + '_marinext.tif')
-                    
+
                         # Update meta to reflect the number of layers
                         meta.update(count = 1)
-                    
+
                         # Write it
                         with rasterio.open(output_image, 'w',
                                                     driver='GTiff',
@@ -225,37 +229,37 @@ def main(options):
                             # Preprocessing before prediction
                             nan_mask = np.isnan(image)
                             image[nan_mask] = impute_nan[nan_mask]
-                    
+
                             image = transform_test(image)
-                            
+
                             image = standardization(image)
-                            
+
                             image = image.unsqueeze(0)
-                            
+
                             if options['test_time_augmentations']:
-                                image = TTA(image) 
-                            
+                                image = TTA(image)
+
                             # Image to Cuda if exist
                             image = image.to(device)
-                    
+
                             all_predictions = []
                             for model in models_list:
                                 # Predictions
                                 logits = model(image)
                                 logits = F.upsample(input=logits, size=(
                                     240, 240), mode='bilinear')
-                        
+
                                 predictions = torch.nn.functional.softmax(logits.detach(), dim=1)
-                        
+
                                 predictions = predictions.argmax(1)+1
-                                
+
                                 if options['test_time_augmentations']:
                                     predictions = TTA(predictions, reverse_aggregation = True)
                                 all_predictions.append(predictions)
-            
+
                             all_predictions = torch.cat(all_predictions)
                             all_predictions = torch.mode(all_predictions, dim=0, keepdim=True)[0]
-                            
+
                             predictions = predictions.squeeze().cpu().numpy()
                             # Write the mask with georeference
                             dst.write_band(1, predictions.astype(dtype).copy()) # In order to be in the same dtype
@@ -265,7 +269,7 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser()
     
-    parser.add_argument('--path', help='Path of the images')
+    parser.add_argument('--path', default="/data/datasets/MADOS", help='Path of the images')
     parser.add_argument('--split', default = 'test', type = str, help='Which dataset split (test or val)')
     parser.add_argument('--test_time_augmentations', default= True, type=bool_flag, help='Generate maps and score based on multiple augmented testing samples? (Use batch = 1 !!!) ')
 
@@ -276,12 +280,17 @@ if __name__ == "__main__":
     parser.add_argument('--output_channels', default=15, type=int, help='Number of output classes')
     
     # Unet model path
-    parser.add_argument('--model_path', default=os.path.join(up(os.path.abspath(__file__)), 'trained_models', '45', 'model_ema.pth'), help='Path to Unet pytorch model')
+    parser.add_argument('--model_path', default="/data/Development/My/mados/marinext/trained_models/marinext_trelu_full_funny_params/105/", help='Path to Unet pytorch model')
     parser.add_argument('--results_percentage', default= True, type=bool_flag, help='Generate confusion matrix results in percentage?')
     
     # Produce Predicted Masks
     parser.add_argument('--predict_masks', default= False, type=bool_flag, help='Generate test set prediction masks?')
     parser.add_argument('--gen_masks_path', default=os.path.join(root_path, 'data', 'predicted_marinext'), help='Path to where to produce store predictions')
+
+    parser.add_argument('--num_workers', default=6, type=int, help='How many cpus for loading data (0 is the main process)')
+    parser.add_argument('--pin_memory', default=True, type=bool_flag, help='Use pinned memory or not')
+    parser.add_argument('--prefetch_factor', default=2, type=int, help='Number of sample loaded in advance by each worker')
+    parser.add_argument('--persistent_workers', default=True, type=bool_flag, help='This allows to maintain the workers Dataset instances alive.')
 
     args = parser.parse_args()
     options = vars(args)  # convert to ordinary dict
