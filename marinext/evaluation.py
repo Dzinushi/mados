@@ -84,8 +84,8 @@ def main(options):
     
     models_files = glob(os.path.join(options['model_path'],'*.pth'))
     for model_file in models_files:
-    
-        model = MariNext(options['input_channels'], options['output_channels'])
+
+        model = MariNext(options['input_channels'], options['output_channels'], options['config'])
     
         model.to(device)
     
@@ -270,6 +270,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     
     parser.add_argument('--path', default="/data/datasets/MADOS", help='Path of the images')
+    parser.add_argument("--config", default='marinext.tiny.240x240.mados.py', type=str)
     parser.add_argument('--split', default = 'test', type = str, help='Which dataset split (test or val)')
     parser.add_argument('--test_time_augmentations', default= True, type=bool_flag, help='Generate maps and score based on multiple augmented testing samples? (Use batch = 1 !!!) ')
 

@@ -13,9 +13,9 @@ configs_path = os.path.join(up(__file__), 'configs')
 
 class MariNext(nn.Module):
 
-    def __init__(self, in_chans, num_classes):
+    def __init__(self, in_chans, num_classes, cfg_name: str = "marinext.tiny.240x240.mados.py"):
         super(MariNext, self).__init__()
-        conf_file = os.path.join(configs_path,'marinext.tiny.240x240.mados.py')
+        conf_file = os.path.join(configs_path, cfg_name)
         cfg = Config.fromfile(conf_file)
         cfg.model.backbone.in_chans = in_chans
         cfg.model.decode_head.num_classes = num_classes
