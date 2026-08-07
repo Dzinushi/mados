@@ -104,7 +104,7 @@ def main(options):
     else:
         device = torch.device("cpu")
         
-    model = MariNext(options['input_channels'], options['output_channels'])
+    model = MariNext(options['input_channels'], options['output_channels'], options['config'])
 
     model.to(device)
 
@@ -389,7 +389,7 @@ if __name__ == "__main__":
 
     # Options
     parser.add_argument('--path', help='Path of the images')
-  
+    parser.add_argument("--config", default='marinext.tiny.240x240.mados.py', type=str)
     parser.add_argument('--mode', default='train', help='select between train or test ')
     parser.add_argument('--epochs', default=120, type=int, help='Number of epochs to run')
     parser.add_argument('--batch', default=8, type=int, help='Batch size')

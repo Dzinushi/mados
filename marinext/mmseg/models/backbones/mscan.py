@@ -3,13 +3,65 @@ import torch.nn as nn
 import math
 import warnings
 from torch.nn.modules.utils import _pair as to_2tuple
+from typing import List, Tuple, Union
 from mmseg.models.builder import BACKBONES
 
-from mmcv.cnn import build_norm_layer
+from mmcv.cnn import build_norm_layer as build_norm_layer
 from mmcv.runner import BaseModule
 from mmcv.cnn.bricks import DropPath
 from mmcv.cnn.utils.weight_init import (constant_init, normal_init,
                                         trunc_normal_init)
+
+
+class AdaptiveLayerNorm(nn.Module):
+    """Layer normalization with learnable asymmetric per-element gating."""
+    def __init__(
+        self,
+        normalized_shape: Union[int, Tuple[int, ...], List[int]],
+        l1: float = 1.0,
+        l2: float = 1.0,
+        beta: float = 0.0,
+        eps: float = 1e-5,
+    ):
+        super().__init__()
+        if isinstance(normalized_shape, int):
+            normalized_shape = (normalized_shape,)
+        self.normalized_shape = tuple(normalized_shape)
+        self.l1 = l1
+        self.l2 = l2
+        self.beta = beta
+        self.eps = eps
+        self.weight_1 = nn.Parameter(torch.zeros(self.normalized_shape).fill_(l1))
+        self.weight_2 = nn.Parameter(torch.zeros(self.normalized_shape).fill_(l2))
+        self.bias = nn.Parameter(torch.zeros(self.normalized_shape).fill_(beta))
+
+    def _norm(self, x: torch.Tensor) -> torch.Tensor:
+        dims = list(range(x.dim() - len(self.normalized_shape), x.dim()))
+        mean = x.mean(dim=dims, keepdim=True)
+        var = x.var(dim=dims, keepdim=True, unbiased=False)
+        return (x - mean) / torch.sqrt(var + self.eps)
+
+    @staticmethod
+    def _mask(x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        with torch.no_grad():
+            mask_1 = (x >= 0).type_as(x)
+            mask_2 = 1 - mask_1
+        return mask_1, mask_2
+
+    @staticmethod
+    def _check_input_dim(x: torch.Tensor, min_rank: int) -> None:
+        if x.dim() < min_rank:
+            raise ValueError(f"expected input with at least {min_rank} dims (got {x.dim()}D input)")
+
+    def _param_shape(self, x: torch.Tensor) -> Tuple[int, ...]:
+        return (1,) * (x.dim() - len(self.normalized_shape)) + self.normalized_shape
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        self._check_input_dim(x, len(self.normalized_shape))
+        x = self._norm(x)
+        mask_1, mask_2 = self._mask(x)
+        shape = self._param_shape(x)
+        return x * (self.weight_1.view(shape) * mask_1 + self.weight_2.view(shape) * mask_2) + self.bias.view(shape)
 
 
 class TReLU(nn.Module):
@@ -32,6 +84,14 @@ def build_act_layer(act_layer) -> nn.Module:
     else:
         raise NotImplementedError("Module '{}' is not found".format(act_layer["type"]))
 
+
+def layer_norm_build_norm_layer(cfg, num_features: int) -> nn.Module:
+    if cfg["type"] == "AdaptiveLayerNorm":
+        return AdaptiveLayerNorm(normalized_shape=num_features, l1=cfg.get("l1"), l2=cfg.get("l2"))
+    elif cfg["type"] == "LayerNorm":
+        return nn.LayerNorm(normalized_shape=num_features)
+    else:
+        raise TypeError(f"Module '{cfg['type']}' is not found. Must be '{nn.LayerNorm.__name__}' or '{AdaptiveLayerNorm.__name__}'")
 
 class Mlp(BaseModule):
     def __init__(self, in_features, hidden_features=None, out_features=None, act_layer=nn.GELU(), drop=0.):
@@ -198,6 +258,7 @@ class MSCAN(BaseModule):
                  depths=[3, 4, 6, 3],
                  num_stages=4,
                  norm_cfg=dict(type='SyncBN', requires_grad=True),
+                 layer_norm=dict(type='LayerNorm'),
                  act_layer=dict(type="GELU"),
                  pretrained=None,
                  init_cfg=None):
@@ -233,7 +294,8 @@ class MSCAN(BaseModule):
                                          drop=drop_rate, drop_path=dpr[cur + j],
                                          norm_cfg=norm_cfg, act_layer=act_layer)
                                    for j in range(depths[i])])
-            norm = nn.LayerNorm(embed_dims[i])
+            norm = layer_norm_build_norm_layer(layer_norm, embed_dims[i])
+            # norm = nn.LayerNorm(embed_dims[i])
             cur += depths[i]
 
             setattr(self, f"patch_embed{i + 1}", patch_embed)
