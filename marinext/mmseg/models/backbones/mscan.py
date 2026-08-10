@@ -6,7 +6,7 @@ from torch.nn.modules.utils import _pair as to_2tuple
 from typing import List, Tuple, Union
 from mmseg.models.builder import BACKBONES
 
-from mmcv.cnn import build_norm_layer as build_norm_layer
+from mmcv.cnn import build_norm_layer as mmcv_build_norm_layer
 from mmcv.runner import BaseModule
 from mmcv.cnn.bricks import DropPath
 from mmcv.cnn.utils.weight_init import (constant_init, normal_init,
@@ -64,6 +64,73 @@ class AdaptiveLayerNorm(nn.Module):
         return x * (self.weight_1.view(shape) * mask_1 + self.weight_2.view(shape) * mask_2) + self.bias.view(shape)
 
 
+class AdaptiveBatchNorm(nn.Module):
+    """Batch normalization with learnable per-channel weights and a bias."""
+    def __init__(
+        self,
+        num_features: int,
+        l1: float = 1.0,
+        l2: float = 1.0,
+        beta: float = 0.0,
+        eps: float = 1e-5,
+        momentum: float = 0.1,
+        use_running_stats: bool = True,
+    ):
+        super().__init__()
+        self.num_features = num_features
+        self.l1 = l1
+        self.l2 = l2
+        self.beta = beta
+        self.eps = eps
+        self.momentum = momentum
+        self.use_running_stats = use_running_stats
+        self.weight_1 = nn.Parameter(torch.zeros(num_features).fill_(l1))
+        self.weight_2 = nn.Parameter(torch.zeros(num_features).fill_(l2))
+        self.bias = nn.Parameter(torch.zeros(num_features).fill_(beta))
+        if self.use_running_stats:
+            self.register_buffer("running_mean", torch.zeros(num_features))
+            self.register_buffer("running_var", torch.ones(num_features))
+
+    def _norm(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Size]:
+        dims = [dim for dim in range(x.dim()) if dim != 1]
+        if not self.training and self.use_running_stats and self.running_mean is not None:
+            shape = [1] * x.dim()
+            shape[1] = self.num_features
+            mean = self.running_mean.view(shape)
+            var = self.running_var.view(shape)
+        else:
+            mean = x.mean(dim=dims, keepdim=True)
+            var = x.var(dim=dims, keepdim=True, unbiased=False)
+            if self.use_running_stats:
+                with torch.no_grad():
+                    n = x.numel() / x.shape[1]
+                    unbiased_var = var.view(-1) * (n / (n - 1) if n > 1 else 1)
+                    self.running_mean.lerp_(mean.view(-1), self.momentum)
+                    self.running_var.lerp_(unbiased_var.view(-1), self.momentum)
+        return (x - mean) / torch.sqrt(var + self.eps), mean.shape
+
+    @staticmethod
+    def _mask(x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        with torch.no_grad():
+            mask_1 = (x >= 0).type_as(x)
+            mask_2 = 1 - mask_1
+        return mask_1, mask_2
+
+    @staticmethod
+    def _check_input_dim(x: torch.Tensor, dims: List[int]) -> None:
+        if x.dim() not in dims:
+            str_dim_names = " or ".join([f"{d}D" for d in dims])
+            raise ValueError(f"expected {str_dim_names} input (got {x.dim()}D input)")
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        self._check_input_dim(x, [2, 3, 4])
+        x, param_shape = self._norm(x)
+        mask_1, mask_2 = self._mask(x)
+        return x * (
+            self.weight_1.view(param_shape) * mask_1 + self.weight_2.view(param_shape) * mask_2
+        ) + self.bias.view(param_shape)
+
+
 class TReLU(nn.Module):
     def __init__(self, r1: float = None, r2: float = None):
         super(TReLU, self).__init__()
@@ -92,6 +159,13 @@ def layer_norm_build_norm_layer(cfg, num_features: int) -> nn.Module:
         return nn.LayerNorm(normalized_shape=num_features)
     else:
         raise TypeError(f"Module '{cfg['type']}' is not found. Must be '{nn.LayerNorm.__name__}' or '{AdaptiveLayerNorm.__name__}'")
+
+
+def build_norm_layer(cfg, num_features: int) -> Tuple[str, nn.Module]:
+    if cfg["type"] == "ABN":
+        return "abn", AdaptiveBatchNorm(num_features=num_features, l1=cfg.get("l1"), l2=cfg.get("l2"))
+    else:
+        return mmcv_build_norm_layer(cfg, num_features)
 
 class Mlp(BaseModule):
     def __init__(self, in_features, hidden_features=None, out_features=None, act_layer=nn.GELU(), drop=0.):
