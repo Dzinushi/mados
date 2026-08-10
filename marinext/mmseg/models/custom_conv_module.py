@@ -8,7 +8,7 @@ from mmcv.utils import _BatchNorm, _InstanceNorm
 from mmcv.cnn.utils import constant_init, kaiming_init
 from mmcv.cnn.bricks.activation import build_activation_layer
 from mmcv.cnn.bricks.conv import build_conv_layer
-from mmcv.cnn.bricks.norm import build_norm_layer
+from mmcv.cnn.bricks.norm import build_norm_layer as mmcv_build_norm_layer
 from mmcv.cnn.bricks.padding import build_padding_layer
 
 
@@ -31,6 +31,65 @@ def build_act_layer(act_layer) -> nn.Module:
         return TReLU(r1=act_layer.get("r1"), r2=act_layer.get("r2"))
     else:
         raise NotImplementedError("Module '{}' is not found".format(act_layer["type"]))
+
+
+class AdaptiveGroupNorm(nn.Module):
+    def __init__(
+        self,
+        num_channels: int,
+        num_groups: int,
+        l1: float = 1.0,
+        l2: float = 1.0,
+        beta: float = 0.0,
+        eps: float = 1e-5,
+    ):
+        super().__init__()
+        self.num_channels = num_channels
+        self.num_groups = num_groups
+        self.l1 = l1
+        self.l2 = l2
+        self.beta = beta
+        self.eps = eps
+        self.weight_1 = nn.Parameter(torch.zeros(num_channels).fill_(self.l1))
+        self.weight_2 = nn.Parameter(torch.zeros(num_channels).fill_(self.l2))
+        self.bias = nn.Parameter(torch.zeros(num_channels).fill_(self.beta))
+
+    def _norm(self, x: torch.Tensor) -> torch.Tensor:
+        original_shape = x.shape
+        x = x.reshape(x.shape[0], self.num_groups, -1)
+        mean = x.mean(dim=-1, keepdim=True)
+        var = x.var(dim=-1, keepdim=True, unbiased=False)
+        x = (x - mean) / torch.sqrt(var + self.eps)
+        x = x.reshape(original_shape)
+        return x
+
+    @staticmethod
+    def _mask(x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        with torch.no_grad():
+            mask_1 = (x >= 0).type_as(x)
+            mask_2 = 1 - mask_1
+        return mask_1, mask_2
+
+    @staticmethod
+    def _check_input_dim(x: torch.Tensor, dims: List[int]) -> None:
+        if x.dim() not in dims:
+            str_dim_names = " or ".join([f"{d}D" for d in dims])
+            raise ValueError(f"expected {str_dim_names} input (got {x.dim()}D input)")
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        self._check_input_dim(x, [2, 3, 4])
+        x = self._norm(x)
+        mask_1, mask_2 = self._mask(x)
+        shape = [1] * x.dim()
+        shape[1] = self.num_channels
+        return x * (self.weight_1.view(shape) * mask_1 + self.weight_2.view(shape) * mask_2) + self.bias.view(shape)
+
+
+def build_norm_layer(cfg, num_channels: int) -> Tuple[str, nn.Module]:
+    if cfg["type"] == "AGN":
+        return "agn", AdaptiveGroupNorm(num_channels=num_channels, num_groups=cfg.get("num_groups"), l1=cfg.get("l1"), l2=cfg.get("l2"))
+    else:
+        return mmcv_build_norm_layer(cfg, num_features)
 
 
 class ConvModule(nn.Module):
