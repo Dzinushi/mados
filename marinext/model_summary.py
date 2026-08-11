@@ -8,7 +8,7 @@ from os.path import dirname as up
 
 import torch
 import torch.nn as nn
-from torch.utils.flop_counter import FlopCounterMode
+from thop import profile
 
 sys.path.append(up(os.path.abspath(__file__)))
 from marinext_wrapper import MariNext
@@ -80,10 +80,8 @@ def count_parameters(model: nn.Module):
 
 def measure_flops(model: nn.Module, input_size: list, device: torch.device):
     input_data = torch.randn(input_size, device=device)
-    with FlopCounterMode(display=False) as flop_counter:
-        model(input_data)
-    return flop_counter.get_total_flops()
-
+    macs, _ = profile(model, inputs=(input_data,), verbose=False)
+    return macs * 2
 
 def measure_latency(model: nn.Module, input_size: list, device: torch.device, warmup: int, runs: int):
     model.eval()
