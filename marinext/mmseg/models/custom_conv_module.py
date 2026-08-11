@@ -1,5 +1,5 @@
 import warnings
-from typing import Dict, Optional, Tuple, Union
+from typing import Dict, Optional, Tuple, Union, List
 
 import torch
 import torch.nn as nn
@@ -89,7 +89,7 @@ def build_norm_layer(cfg, num_channels: int) -> Tuple[str, nn.Module]:
     if cfg["type"] == "AGN":
         return "agn", AdaptiveGroupNorm(num_channels=num_channels, num_groups=cfg.get("num_groups"), l1=cfg.get("l1"), l2=cfg.get("l2"))
     else:
-        return mmcv_build_norm_layer(cfg, num_features)
+        return mmcv_build_norm_layer(cfg, num_channels)
 
 
 class ConvModule(nn.Module):
