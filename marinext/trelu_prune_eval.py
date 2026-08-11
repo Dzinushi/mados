@@ -70,21 +70,11 @@ def apply_dynamic_pruning(model: nn.Module, threshold: float):
 
 def main(options):
     seed_all(0)
-    transform_test = transforms.Compose([transforms.ToTensor()])
-    standardization = transforms.Normalize(bands_mean, bands_std)
 
-    splits_path = os.path.join(options['path'], 'splits')
-    dataset_test = MADOS(options['path'], splits_path, options['split'])
-
-    test_loader = DataLoader(dataset_test, batch_size=options['batch'],
-                             num_workers=options['num_workers'], pin_memory=options['pin_memory'],
-                             prefetch_factor=options['prefetch_factor'],
-                             persistent_workers=options['persistent_workers'], shuffle=False)
-
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     models_list = []
     models_files = glob(os.path.join(options['model_path'], '*.pth'))
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     for model_file in models_files:
         model = MariNext(options['input_channels'], options['output_channels'], options['config'])
@@ -109,6 +99,17 @@ def main(options):
             pruned_path = model_file.replace('.pth', '_pruned.pth')
             torch.save(model.state_dict(), pruned_path)
             print(f"Saved pruned model to: {pruned_path}")
+
+    transform_test = transforms.Compose([transforms.ToTensor()])
+    standardization = transforms.Normalize(bands_mean, bands_std)
+
+    splits_path = os.path.join(options['path'], 'splits')
+    dataset_test = MADOS(options['path'], splits_path, options['split'])
+
+    test_loader = DataLoader(dataset_test, batch_size=options['batch'],
+                             num_workers=options['num_workers'], pin_memory=options['pin_memory'],
+                             prefetch_factor=options['prefetch_factor'],
+                             persistent_workers=options['persistent_workers'], shuffle=False)
 
     y_true = []
     y_predicted = []
