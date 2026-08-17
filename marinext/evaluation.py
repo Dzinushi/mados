@@ -55,13 +55,51 @@ def get_band(path):
 
 def main(options):
     seed_all(0)
+
+    # Use gpu or cpu
+    if torch.cuda.is_available():
+        device = torch.device("cuda")
+    else:
+        device = torch.device("cpu")
+
+    models_list = []
+
+    models_files = glob(os.path.join(options['model_path'], '*.pth'))
+    for model_file in models_files:
+
+        model = MariNext(options['input_channels'], options['output_channels'], options['config'])
+
+        model.to(device)
+
+        # Load model from specific epoch to continue the training or start the evaluation
+
+        logging.info('Loading model files from folder: %s' % model_file)
+
+        checkpoint = torch.load(model_file, map_location=device)
+        checkpoint = {k.replace('decoder', 'decode_head'): v for k, v in checkpoint.items() if
+                      ('proj1' not in k) and ('proj2' not in k)}
+
+        # for name, param in checkpoint.items():
+        #     if name.find("r1") != -1 or name.find("r2") != -1:
+        #         print("{}: {}".format(name, param))
+        # exit(0)
+        model.load_state_dict(checkpoint)
+
+        del checkpoint  # dereference
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
+        model.eval()
+
+        models_list.append(model)
+
     # Transformations
     
     transform_test = transforms.Compose([transforms.ToTensor()])
     standardization = transforms.Normalize(bands_mean, bands_std)
     
     splits_path = os.path.join(options['path'],'splits')
-    
+
     # Construct Data loader
 
     dataset_test = MADOS(options['path'], splits_path, options['split'])
@@ -73,38 +111,6 @@ def main(options):
                                 prefetch_factor=options['prefetch_factor'],
                                 persistent_workers=options['persistent_workers'],
                                 shuffle = False)
-
-    # Use gpu or cpu
-    if torch.cuda.is_available():
-        device = torch.device("cuda")
-    else:
-        device = torch.device("cpu")
-        
-    models_list = []
-    
-    models_files = glob(os.path.join(options['model_path'],'*.pth'))
-    for model_file in models_files:
-
-        model = MariNext(options['input_channels'], options['output_channels'], options['config'])
-    
-        model.to(device)
-    
-        # Load model from specific epoch to continue the training or start the evaluation
-        
-        logging.info('Loading model files from folder: %s' % model_file)
-    
-        checkpoint = torch.load(model_file, map_location = device)
-        checkpoint = {k.replace('decoder','decode_head'):v for k,v in checkpoint.items() if ('proj1' not in k) and ('proj2' not in k)}
-    
-        model.load_state_dict(checkpoint)
-
-        del checkpoint  # dereference
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
-    
-        model.eval()
-        
-        models_list.append(model)
 
     y_true = []
     y_predicted = []
